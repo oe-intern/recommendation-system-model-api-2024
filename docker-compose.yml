@@ -1,0 +1,115 @@
+services:
+  recommendation-redis:
+    image: redis:latest
+    container_name: recommendation-redis
+    environment:
+      SERVICE_TAGS: dev
+      SERVICE_NAME: redis
+    volumes:
+      - recommendation-redis-data:/data
+    ports:
+      - "6380:6379"
+    networks:
+      - recommendation-network
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      retries: 5
+      timeout: 5s
+      start_period: 10s
+
+  recommendation-api:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    image: recommendation-api
+    container_name: recommendation-api
+    working_dir: /var/www/
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./:/var/www
+    depends_on:
+      - recommendation-redis
+    networks:
+      - recommendation-network
+    environment:
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=6379
+
+  recommendation-nginx:
+    image: nginx:alpine
+    container_name: recommendation-nginx
+    ports:
+      - "5901:80"
+      - "5904:443"
+    volumes:
+      - ./:/var/www
+      - ./docker-compose/nginx:/etc/nginx/conf.d/
+    depends_on:
+      - recommendation-api
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - recommendation-network
+
+  recommendation-worker:
+    container_name: recommendation-worker
+    build: .
+    command: celery -A app.core.celery_app worker --loglevel=info
+    volumes:
+      - .:/var/www
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    depends_on:
+      - recommendation-redis
+    networks:
+      - recommendation-network
+    healthcheck:
+      test: [ "CMD", "celery", "-A", "app.core.celery_app", "status" ]
+      retries: 5
+      timeout: 10s
+      start_period: 30s
+
+  recommendation-flower:
+    container_name: recommendation-flower
+    build: .
+    command: celery -A app.core.celery_app flower --port=5555
+    volumes:
+      - .:/var/www
+    ports:
+      - "5556:5555"
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    depends_on:
+      - recommendation-redis
+      - recommendation-worker
+    networks:
+      - recommendation-network
+
+  recommendation-celery-beat:
+    container_name: recommendation-celery-beat
+    build: .
+    command: celery -A app.core.celery_app beat --loglevel=info
+    volumes:
+      - .:/var/www
+    environment:
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+    depends_on:
+      - recommendation-redis
+      - recommendation-worker
+    networks:
+      - recommendation-network
+
+networks:
+  recommendation-network:
+    driver: bridge
+
+volumes:
+  recommendation-redis-data:
+    driver: local
