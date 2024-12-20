@@ -78,17 +78,33 @@ def recommend(redis: Redis, data: dict):
 
     for row in df.itertuples():
         try:
-            name_embedding = model.encode(row.name)
-            desciption_embedding = model.encode(row.description)
+            name_embedding = None
+            try:
+                name_embedding = model.encode(row.name)
+            except Exception as e:
+                print(row.name)
+                print(f"Lỗi với sản phẩm {row.name}: {e}")
 
-            response = requests.get(row.image)
-            response.raise_for_status()
-            img = Image.open(BytesIO(response.content))
-            inputs = processor(images=img, return_tensors="pt")
-            with torch.no_grad():
-                image_embedding = img_model.get_image_features(**inputs)
-                image_embedding = image_embedding / image_embedding.norm(dim=-1, keepdim=True)
-                image_embedding = image_embedding.reshape((512,))
+            desciption_embedding = None
+            try:
+                desciption_embedding = model.encode(row.description)
+            except Exception as e:
+                print(row.description)
+                print(f"Lỗi với sản phẩm {row.name}: {e}")
+
+            image_embedding = None
+            try:
+                response = requests.get(row.image)
+                response.raise_for_status()
+                img = Image.open(BytesIO(response.content))
+                inputs = processor(images=img, return_tensors="pt")
+                with torch.no_grad():
+                    image_embedding = img_model.get_image_features(**inputs)
+                    image_embedding = image_embedding / image_embedding.norm(dim=-1, keepdim=True)
+                    image_embedding = image_embedding.reshape((512,))
+            except Exception as e:
+                print(f"Image")
+                print(f"Lỗi với sản phẩm {row.name}: {e}")
 
             results.append({
                 "index": row.Index,
@@ -96,6 +112,7 @@ def recommend(redis: Redis, data: dict):
                 "description_embedding": desciption_embedding,
                 "image_embedding": image_embedding,
             })
+
         except Exception as e:
             print(f"Lỗi với sản phẩm {row.name}: {e}")
 
@@ -123,7 +140,7 @@ def recommend(redis: Redis, data: dict):
         image_embedding = item.image_embedding
         desciption_embedding = item.description_embedding
 
-        if type not in df_new or image_embedding==None:
+        if type not in df_new :
             continue
 
         recommend_types = df_new[type]
@@ -135,29 +152,44 @@ def recommend(redis: Redis, data: dict):
             chosen_product_id = ""
             for product_id, product_name, embedding_product_name, embedding_img, embedding_description in df_types[recommend_type]:
                 try:
-                    similarity1 = cosine_similarity_vector(
-                        np.array(name_embedding), 
-                        np.array(embedding_product_name)
-                    )
+                    similarities = []             
+                    try:
+                        similarity1 = cosine_similarity_vector(
+                            np.array(name_embedding),
+                            np.array(embedding_product_name)
+                        )
+                        similarities.append(similarity1)
+                    except Exception as e:
+                        print(f"Lỗi tính similarity1 cho sản phẩm {product_name}: {e}")
+                    
+                    try:
+                        similarity2 = cosine_similarity_vector(
+                            image_embedding.numpy().reshape((512,)),
+                            embedding_img.numpy().reshape((512,))
+                        )
+                        similarities.append(similarity2)
+                    except Exception as e:
+                        print(f"Lỗi tính similarity2 cho sản phẩm {product_name}: {e}")
+                    
+                    try:
+                        similarity3 = cosine_similarity_vector(
+                            np.array(desciption_embedding),
+                            np.array(embedding_description)
+                        )
+                        similarities.append(similarity3)
+                    except Exception as e:
+                        print(f"Lỗi tính similarity3 cho sản phẩm {product_name}: {e}")
 
-                    similarity2 = cosine_similarity_vector(
-                        image_embedding.cpu().numpy().reshape((512,)), 
-                        embedding_img.cpu().numpy().reshape((512,))
-                    )
-
-                    similarity3 = cosine_similarity_vector(
-                        np.array(desciption_embedding),
-                        np.array(embedding_description)
-                    )
-
-                    similarity = (similarity1 + similarity2 + similarity3)/3
-
-                    if similarity > max_similarity:
-                        max_similarity = similarity
-                        chosen_product_id = product_id
+                    if similarities:  
+                        similarity = sum(similarities) / len(similarities)
+                        if similarity > max_similarity:
+                            max_similarity = similarity
+                            chosen_product_id = product_id
+                    else:
+                        similarity = 0
 
                 except Exception as e:
-                    print(f"Lỗi với sản phẩm {product_name}: {e}")
+                    print(f"Lỗi tổng quát với sản phẩm {product_name}: {e}")
 
             if len(chosen_product_id)>0:
                 recommend_items[id].append(chosen_product_id)
@@ -207,17 +239,18 @@ def new_product_recommend(redis: Redis, data: NewProductRecommendationRequest):
 
     recommend_types = [t for t, _ in sorted(zip(other_texts.keys(), adjusted_similarities), key=lambda x: x[1], reverse=True)]
     
-    recommend_items = []
+    recommend_list = []
+    i=0
     for recommend_type in recommend_types:
         chosen_product_index = random.randint(0, len(df_types[recommend_type])-1)
-        chosen_product_id = df_types[recommend_type][chosen_product_index][1]
+        chosen_product_id = df_types[recommend_type][chosen_product_index][0]
         if len(chosen_product_id)>-1:
-            recommend_items[id].append(chosen_product_id)
+            recommend_list.append(chosen_product_id)
             i+=1
         if i==number_of_items:
             break
     
-    return recommend_items
+    return recommend_list
 
 def embedding_type(texts):
     embeddings = {}
