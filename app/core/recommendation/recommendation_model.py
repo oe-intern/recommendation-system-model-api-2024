@@ -69,6 +69,7 @@ def recommend(redis: Redis, data: dict):
     products = request_data.products
     type_scores = request_data.type_scores
     number_of_items = request_data.number_of_items
+    product_score = request_data.product_scores
 
     df = json_to_dataframe(products)
     df["name_embedding"] = None
@@ -187,6 +188,10 @@ def recommend(redis: Redis, data: dict):
                             chosen_product_id = product_id
                     else:
                         similarity = 0
+
+                    score = product_score.get(id, {}).get(product_id, 0)
+
+                    similarity = similarity + 3*score
 
                 except Exception as e:
                     print(f"Lỗi tổng quát với sản phẩm {product_name}: {e}")
