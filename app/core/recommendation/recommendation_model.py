@@ -1,3 +1,4 @@
+from fastapi import status
 from redis import Redis
 import pandas as pd
 import numpy as np
@@ -22,6 +23,7 @@ from app.hepler.similarity import (
 )
 from app.schema.job import Job
 from app.schema.recommendation import RecommendationRequest, PreRecommendationRequest, NewProductRecommendationRequest
+from app.common.exception import CustomException
 
 model = SentenceTransformer("paraphrase-mpnet-base-v2")
 img_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
@@ -69,6 +71,7 @@ def recommend(redis: Redis, data: dict):
     products = request_data.products
     type_scores = request_data.type_scores
     number_of_items = request_data.number_of_items
+    product_score = request_data.product_scores
 
     df = json_to_dataframe(products)
     df["name_embedding"] = None
@@ -188,6 +191,10 @@ def recommend(redis: Redis, data: dict):
                     else:
                         similarity = 0
 
+                    score = product_score.get(id, {}).get(product_id, 0)
+
+                    similarity = similarity + 3*score
+
                 except Exception as e:
                     print(f"Lỗi tổng quát với sản phẩm {product_name}: {e}")
 
@@ -215,8 +222,13 @@ def new_product_recommend(redis: Redis, data: NewProductRecommendationRequest):
 
     types=df_types.keys()
     embeddings = embedding_type(types)
+    text = None
 
-    text = df.loc[df['shopify_id'] == product_id, 'product_type'].iloc[0]
+    try:
+        text = df.loc[df['shopify_id'] == product_id, 'product_type'].iloc[0]
+    except Exception as e:
+        raise CustomException(status_code=status.HTTP_400_BAD_REQUEST, msg="Product not found {}".format(product_id))
+
     vector = embeddings[text]
     other_texts = {k: v for k, v in embeddings.items() if k != text}
     similarities = compute_cosine_similarity(vector, list(other_texts.values()))
@@ -243,8 +255,8 @@ def new_product_recommend(redis: Redis, data: NewProductRecommendationRequest):
     i=0
     for recommend_type in recommend_types:
         chosen_product_index = random.randint(0, len(df_types[recommend_type])-1)
-        chosen_product_id = df_types[recommend_type][chosen_product_index][0]
-        if len(chosen_product_id)>-1:
+        chosen_product_id = df_types[recommend_type][chosen_product_index][1]
+        if len(chosen_product_id)>-1 and chosen_product_id not in recommend_list:
             recommend_list.append(chosen_product_id)
             i+=1
         if i==number_of_items:
